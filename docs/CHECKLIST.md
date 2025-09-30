@@ -21,6 +21,12 @@ This is the actionable to-do list for engineers implementing Argus. It condenses
 
 ## Developer To-Dos
 
+### Security Review Notes (Sep 30)
+- **Phase 4 blocker:** implement real user auth + RBAC before adding more operator/admin UI; current env-based role is temporary.
+- **TLS verification:** restore certificate checking in all Proxmox clients; only allow insecure mode for explicit lab overrides.
+- **Origin hygiene:** tighten CORS to the trusted frontend and add CSRF protection once auth is wired.
+- Revisit remaining SECURITY.md items (dual control, proposal validation, secret manager, CI scans) after the auth/TLS/CORS fixes land.
+
 ### Backend (Express API)
 - [ ] Implement routes: `/cluster`, `/metrics`, `/logs`, `/actions/proposals`, `/actions/{id}/confirm`.
 - [ ] Integrate **Ajv** to validate proposals against `proposal.schema.json`.

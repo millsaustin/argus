@@ -7,6 +7,29 @@ const roleOrder = [Roles.VIEWER, Roles.OPERATOR, Roles.ADMIN];
 // In-memory user store; replace with persistent storage in production.
 const users = [];
 
+const DEFAULT_ADMIN = {
+  username: 'admin',
+  password: 'changeme',
+  role: Roles.ADMIN
+};
+
+function ensureDefaultAdmin() {
+  const hasUsers = users.length > 0;
+  const alreadyExists = users.some((user) => user.username === DEFAULT_ADMIN.username);
+
+  if (!hasUsers && !alreadyExists) {
+    const passwordHash = bcrypt.hashSync(DEFAULT_ADMIN.password, 12);
+    users.push({
+      username: DEFAULT_ADMIN.username,
+      passwordHash,
+      role: normalizeRole(DEFAULT_ADMIN.role)
+    });
+    console.warn('Default admin credentials created (admin / changeme). Update immediately.');
+  }
+}
+
+ensureDefaultAdmin();
+
 function normalizeRole(role) {
   const lowered = (role || Roles.VIEWER).toLowerCase();
   return roleOrder.includes(lowered) ? lowered : Roles.VIEWER;

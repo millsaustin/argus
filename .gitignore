@@ -9,6 +9,9 @@ yarn-error.log*
 .env.*
 !.env.example
 
+# Local GitHub token (do not commit real token)
+.github_token
+
 # OS junk
 .DS_Store
 

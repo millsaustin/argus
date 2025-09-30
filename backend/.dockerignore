@@ -1,0 +1,11 @@
+node_modules
+npm-debug.log*
+yarn-debug.log*
+
+# Never copy local env secrets into the image
+.env
+.env.*
+!.env.example
+
+# Mac
+.DS_Store

@@ -1,0 +1,50 @@
+version: "3.8"
+services:
+  backend:
+    build:
+      context: ./backend
+      args:
+        - APK_REPOSITORY_URL=${APK_REPOSITORY_URL:-https://dl-cdn.alpinelinux.org/alpine}
+        - APK_ALLOW_INSECURE_MIRROR=${APK_ALLOW_INSECURE_MIRROR:-false}
+        - NPM_STRICT_SSL=${NPM_STRICT_SSL:-true}
+    container_name: argus-backend
+    env_file:
+      - .env
+    ports:
+      - "3001:3001"
+    healthcheck:
+      test: ["CMD-SHELL", "/bin/sh /app/scripts/healthcheck.sh"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - NPM_STRICT_SSL=${NPM_STRICT_SSL:-true}
+        - APK_REPOSITORY_URL=${APK_REPOSITORY_URL:-https://dl-cdn.alpinelinux.org/alpine}
+        - APK_ALLOW_INSECURE_MIRROR=${APK_ALLOW_INSECURE_MIRROR:-false}
+    container_name: argus-frontend
+    environment:
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost}
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:alpine
+    container_name: argus-nginx
+    volumes:
+      - ./reverse-proxy/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_started
+    restart: unless-stopped

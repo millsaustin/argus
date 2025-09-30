@@ -2,45 +2,96 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import morgan from 'morgan';
+import session from 'express-session';
 
 import { pveGet } from './src/proxmoxClient.js';
-import Roles from './src/authRoles.js';
+import { authenticate, requireAuth, requireRole } from './src/auth.js';
 
 dotenv.config();
 const app = express();
-app.use(cors());
+app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 app.use(morgan('combined'));
 
-const roleOrder = [Roles.VIEWER, Roles.OPERATOR, Roles.ADMIN];
-
-app.use((req, _res, next) => {
-  const roleFromEnv = (process.env.ARGUS_ROLE || Roles.VIEWER).toLowerCase();
-  req.userRole = roleOrder.includes(roleFromEnv) ? roleFromEnv : Roles.VIEWER;
-  next();
-});
-
-function requireRole(minRole) {
-  return (req, res, next) => {
-    const userIndex = roleOrder.indexOf(req.userRole);
-    const minIndex = roleOrder.indexOf(minRole);
-
-    if (userIndex === -1 || minIndex === -1 || userIndex < minIndex) {
-      return res.status(403).json({
-        ok: false,
-        code: 'FORBIDDEN',
-        message: 'Insufficient role'
-      });
-    }
-
-    return next();
-  };
+const sessionSecret = process.env.SESSION_SECRET;
+if (!sessionSecret) {
+  console.warn('SESSION_SECRET not set; using insecure development secret');
 }
+
+app.use(session({
+  secret: sessionSecret || 'argus-insecure-dev-secret',
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax'
+  }
+}));
 
 // Health
 app.get('/api/health', (_req, res) => res.json({ status: 'ok', time: new Date().toISOString() }));
 
-app.get('/api/protected', requireRole(Roles.OPERATOR), (_req, res) => {
+app.post('/api/login', async (req, res) => {
+  const { username, password } = req.body || {};
+
+  if (!username || !password) {
+    return res.status(400).json({
+      ok: false,
+      code: 'BAD_REQUEST',
+      message: 'Username and password are required'
+    });
+  }
+
+  try {
+    const user = await authenticate(username, password);
+    if (!user) {
+      return res.status(401).json({
+        ok: false,
+        code: 'INVALID_CREDENTIALS',
+        message: 'Invalid username or password'
+      });
+    }
+
+    req.session.user = user;
+    return res.json({
+      ok: true,
+      user
+    });
+  } catch (error) {
+    console.error('Login error:', error);
+    return res.status(500).json({
+      ok: false,
+      code: 'INTERNAL',
+      message: 'Login failed'
+    });
+  }
+});
+
+app.post('/api/logout', requireAuth, (req, res) => {
+  req.session.destroy((error) => {
+    if (error) {
+      console.error('Logout error:', error);
+      return res.status(500).json({
+        ok: false,
+        code: 'INTERNAL',
+        message: 'Logout failed'
+      });
+    }
+
+    res.clearCookie('connect.sid');
+    return res.json({ ok: true });
+  });
+});
+
+app.get('/api/me', requireAuth, (req, res) => {
+  return res.json({
+    ok: true,
+    user: req.session.user
+  });
+});
+
+app.get('/api/protected', requireRole('operator'), (_req, res) => {
   res.json({ ok: true, msg: 'You are operator or admin' });
 });
 

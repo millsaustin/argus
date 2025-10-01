@@ -26,7 +26,7 @@ function formatUptime(seconds) {
   return parts.length ? parts.join(' ') : `${seconds}s`;
 }
 
-export default function VmListTable({ title, items }) {
+export default function VmListTable({ title, items, onVmSelect }) {
   if (items == null) {
     return <Loading label="Loading VM list..." />;
   }
@@ -60,8 +60,17 @@ export default function VmListTable({ title, items }) {
         </thead>
         <tbody>
           {items.map((item) => (
-            <tr key={item.vmid ?? item.id}
-                style={styles.row}
+            <tr
+              key={item.vmid ?? item.id}
+              style={{
+                ...styles.row,
+                cursor: onVmSelect ? 'pointer' : 'default'
+              }}
+              onClick={() => {
+                if (onVmSelect) {
+                  onVmSelect(item);
+                }
+              }}
             >
               <td>{item.vmid ?? '—'}</td>
               <td>{item.name || item.node || item.hostname || '—'}</td>

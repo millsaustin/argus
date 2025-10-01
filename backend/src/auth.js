@@ -1,4 +1,5 @@
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 
 import Roles from './authRoles.js';
 
@@ -6,29 +7,6 @@ const roleOrder = [Roles.VIEWER, Roles.OPERATOR, Roles.ADMIN];
 
 // In-memory user store; replace with persistent storage in production.
 const users = [];
-
-const DEFAULT_ADMIN = {
-  username: 'admin',
-  password: 'changeme',
-  role: Roles.ADMIN
-};
-
-function ensureDefaultAdmin() {
-  const hasUsers = users.length > 0;
-  const alreadyExists = users.some((user) => user.username === DEFAULT_ADMIN.username);
-
-  if (!hasUsers && !alreadyExists) {
-    const passwordHash = bcrypt.hashSync(DEFAULT_ADMIN.password, 12);
-    users.push({
-      username: DEFAULT_ADMIN.username,
-      passwordHash,
-      role: normalizeRole(DEFAULT_ADMIN.role)
-    });
-    console.warn('Default admin credentials created (admin / changeme). Update immediately.');
-  }
-}
-
-ensureDefaultAdmin();
 
 function normalizeRole(role) {
   const lowered = (role || Roles.VIEWER).toLowerCase();
@@ -39,6 +17,22 @@ function sanitizeUser(user) {
   if (!user) return null;
   return { username: user.username, role: user.role };
 }
+
+function bootstrapAdminIfEmpty() {
+  if (users.length > 0) return;
+
+  const temporaryPassword = crypto.randomBytes(12).toString('hex');
+  const passwordHash = bcrypt.hashSync(temporaryPassword, 12);
+  const adminUser = {
+    username: 'admin',
+    passwordHash,
+    role: Roles.ADMIN
+  };
+  users.push(adminUser);
+  console.warn('Admin bootstrap created, force password change required. Temporary password:', temporaryPassword);
+}
+
+bootstrapAdminIfEmpty();
 
 export async function createUser(username, password, role = Roles.VIEWER) {
   if (!username || !password) {

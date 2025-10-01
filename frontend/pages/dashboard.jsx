@@ -1,14 +1,16 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/router';
 
-import { getNodes, getClusterStatus, getQemuForNode, getLxcForNode } from '../lib/api.js';
+import { getNodes, getClusterStatus, getQemuForNode, getLxcForNode, logout } from '../lib/api.js';
 import ClusterCard from '../components/ClusterCard.jsx';
 import VmListTable from '../components/VmListTable.jsx';
 import ErrorBanner from '../components/ErrorBanner.jsx';
 import Loading from '../components/Loading.jsx';
 import GlobalAlert from '../components/GlobalAlert.jsx';
 import { canOperate } from '../lib/role.js';
+import VmMetricsModal from '../components/VmMetricsModal.jsx';
 
 const REFRESH_INTERVAL_MS = 10000;
 
@@ -17,6 +19,7 @@ function isForbidden(error) {
 }
 
 export default function DashboardPage() {
+  const router = useRouter();
   const [nodes, setNodes] = useState(null);
   const [selectedNode, setSelectedNode] = useState('');
   const [clusterStatus, setClusterStatus] = useState([]);
@@ -29,6 +32,9 @@ export default function DashboardPage() {
   const [clusterError, setClusterError] = useState(null);
   const [qemuError, setQemuError] = useState(null);
   const [lxcError, setLxcError] = useState(null);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [metricsVm, setMetricsVm] = useState(null);
 
   const currentNode = useMemo(() => {
     if (!Array.isArray(nodes)) return null;
@@ -98,11 +104,47 @@ export default function DashboardPage() {
   }, [loadNodes, loadCluster, loadNodeResources, selectedNode]);
 
   useEffect(() => {
-    refreshAll();
-  }, [refreshAll]);
+    let cancelled = false;
+
+    const verifySession = async () => {
+      try {
+        const response = await fetch('/api/me', { credentials: 'include' });
+
+        if (response.status === 401) {
+          router.replace('/login');
+          return;
+        }
+
+        if (!response.ok) {
+          throw new Error('Session check failed');
+        }
+
+        if (!cancelled) {
+          setAuthChecked(true);
+        }
+      } catch (error) {
+        console.error('Auth check failed:', error);
+        if (!cancelled) {
+          router.replace('/login');
+        }
+      }
+    };
+
+    verifySession();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
 
   useEffect(() => {
-    if (!selectedNode) return undefined;
+    if (!authChecked) return undefined;
+
+    refreshAll();
+  }, [authChecked, refreshAll]);
+
+  useEffect(() => {
+    if (!authChecked || !selectedNode) return undefined;
 
     loadNodeResources(selectedNode).then(() => setLastUpdated(Date.now()));
 
@@ -126,13 +168,30 @@ export default function DashboardPage() {
 
   const triggerProtected = async () => {
     try {
-      const response = await fetch('/api/protected');
+      const response = await fetch('/api/protected', { credentials: 'include' });
       const payload = await response.json();
       console.log('Protected response:', payload);
     } catch (error) {
       console.error('Protected request failed:', error);
     }
   };
+
+  const handleLogout = async () => {
+    if (isLoggingOut) return;
+    setIsLoggingOut(true);
+    try {
+      await logout();
+    } catch (error) {
+      console.error('Logout failed:', error);
+    } finally {
+      setIsLoggingOut(false);
+      router.replace('/login');
+    }
+  };
+
+  if (!authChecked) {
+    return <Loading label="Verifying session…" />;
+  }
 
   return (
     <main style={styles.page}>
@@ -142,6 +201,14 @@ export default function DashboardPage() {
         {lastUpdated && (
           <p style={styles.updated}>Last updated: {new Date(lastUpdated).toLocaleTimeString()}</p>
         )}
+        <button
+          type="button"
+          onClick={handleLogout}
+          style={{ ...styles.logoutButton, opacity: isLoggingOut ? 0.7 : 1 }}
+          disabled={isLoggingOut}
+        >
+          {isLoggingOut ? 'Signing out…' : 'Sign out'}
+        </button>
       </header>
 
       {clusterError && (
@@ -274,7 +341,14 @@ export default function DashboardPage() {
                 hint={qemuError.hint}
               />
             )}
-            <VmListTable title="Virtual Machines (QEMU)" items={qemuItems} />
+            <VmListTable
+              title="Virtual Machines (QEMU)"
+              items={qemuItems}
+              onVmSelect={(vm) => {
+                if (!vm?.vmid) return;
+                setMetricsVm({ vmid: vm.vmid, node: selectedNode });
+              }}
+            />
           </div>
           <div style={styles.tableColumn}>
             {lxcError && (
@@ -288,6 +362,13 @@ export default function DashboardPage() {
           </div>
         </section>
       )}
+
+      <VmMetricsModal
+        visible={Boolean(metricsVm)}
+        onClose={() => setMetricsVm(null)}
+        node={metricsVm?.node}
+        vmid={metricsVm?.vmid}
+      />
     </main>
   );
 }
@@ -310,6 +391,20 @@ const styles = {
   subtitle: {
     marginTop: '0.5rem',
     color: '#94a3b8'
+  },
+  updated: {
+    marginTop: '0.4rem',
+    color: '#38bdf8'
+  },
+  logoutButton: {
+    marginTop: '1rem',
+    padding: '0.5rem 0.9rem',
+    borderRadius: '0.5rem',
+    border: '1px solid rgba(148, 163, 184, 0.35)',
+    backgroundColor: '#1e293b',
+    color: '#e2e8f0',
+    cursor: 'pointer',
+    fontWeight: 600
   },
   selectorRow: {
     display: 'flex',

@@ -15,18 +15,17 @@ ensureEnv();
 const baseURL = process.env.PROXMOX_API_URL.replace(/\/$/, '');
 const tokenId = process.env.PROXMOX_TOKEN_ID;
 const tokenSecret = process.env.PROXMOX_TOKEN_SECRET;
-const allowInsecure = String(process.env.PROXMOX_INSECURE_TLS).toLowerCase() === 'true';
+const isProduction = process.env.NODE_ENV === 'production';
+const allowInsecureEnv = String(process.env.PROXMOX_INSECURE_TLS).toLowerCase() === 'true';
+const allowInsecure = !isProduction && allowInsecureEnv;
 
 const axiosConfig = {
   baseURL,
   headers: {
     Authorization: `PVEAPIToken=${tokenId}=${tokenSecret}`
-  }
+  },
+  httpsAgent: new https.Agent({ rejectUnauthorized: !allowInsecure })
 };
-
-if (allowInsecure) {
-  axiosConfig.httpsAgent = new https.Agent({ rejectUnauthorized: false });
-}
 
 const client = axios.create(axiosConfig);
 
@@ -41,7 +40,43 @@ export async function pveGet(path) {
       const proxmoxError = new Error('Proxmox request failed');
       proxmoxError.status = error.response.status;
       proxmoxError.payload = error.response.data;
+      if (error.code === 'DEPTH_ZERO_SELF_SIGNED_CERT' || error.code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE') {
+        proxmoxError.message = 'TLS verification failed. Import the Proxmox CA certificate instead of disabling verification.';
+      }
       throw proxmoxError;
+    }
+
+    if (error.code === 'DEPTH_ZERO_SELF_SIGNED_CERT' || error.code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE') {
+      const tlsError = new Error('TLS verification failed. Import the Proxmox CA certificate instead of disabling verification.');
+      tlsError.status = 502;
+      throw tlsError;
+    }
+
+    throw error;
+  }
+}
+
+export async function pvePost(path, body = {}) {
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+
+  try {
+    const response = await client.post(normalizedPath, body);
+    return response.data?.data;
+  } catch (error) {
+    if (error.response) {
+      const proxmoxError = new Error('Proxmox request failed');
+      proxmoxError.status = error.response.status;
+      proxmoxError.payload = error.response.data;
+      if (error.code === 'DEPTH_ZERO_SELF_SIGNED_CERT' || error.code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE') {
+        proxmoxError.message = 'TLS verification failed. Import the Proxmox CA certificate instead of disabling verification.';
+      }
+      throw proxmoxError;
+    }
+
+    if (error.code === 'DEPTH_ZERO_SELF_SIGNED_CERT' || error.code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE') {
+      const tlsError = new Error('TLS verification failed. Import the Proxmox CA certificate instead of disabling verification.');
+      tlsError.status = 502;
+      throw tlsError;
     }
 
     throw error;

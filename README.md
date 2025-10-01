@@ -57,6 +57,14 @@ to `.env` and update the values for your environment.
 | `PROXMOX_TOKEN_ID` | Token identifier in `<user>@<realm>!<token-name>` format. |
 | `PROXMOX_TOKEN_SECRET` | Secret associated with the token ID. |
 | `NEXT_PUBLIC_API_URL` | Base URL the frontend uses when calling the backend. |
+| `SESSION_SECRET` | Secret key for signing session cookies. Set per environment. |
+| `MONGO_URL` | Connection string for MongoDB-backed session storage. |
+| `POSTGRES_URL` | Postgres connection string for VM metrics history. |
+| `FRONTEND_ORIGIN` | Allowed frontend origin(s) for CORS (`http://localhost:3000` in dev). |
+| `REQUIRE_DUAL_CONTROL` | When `true`, stop/reboot actions require admin approval before execution. |
+| `OPENAI_API_KEY` | API token for OpenAI proposals (required for `/api/assistant/propose`). |
+| `OPENAI_MODEL` | Optional override for the OpenAI model (default `gpt-4o-mini`). |
+| `PROPOSAL_STEP_TIMEOUT_MS` | Milliseconds before a proposal step times out (default `15000`). |
 
 > ⚠️ `.env` is already ignored by git. Never commit real secrets.
 
@@ -66,7 +74,7 @@ command.
 
 ```bash
 cp .env.example .env
-# Edit .env with your Proxmox credentials
+# Edit .env with your Proxmox credentials (leave MONGO_URL pointing at the bundled mongo service)
 docker compose up --build -d
 ```
 
@@ -74,11 +82,43 @@ Smoke-test the deployment:
 
 ```bash
 curl -k http://<argus-host>/api/health
-# then browse to http://<argus-host>/
+# then browse to http://<argus-host>/login
+# sign in with the bootstrap admin password printed in `docker compose logs backend`
+# after login you will land on http://<argus-host>/dashboard
 ```
 
 Use `docker compose logs -f <service>` to tail specific containers, and
 `docker compose down` to stop the stack.
+
+## Reverse Proxy & TLS
+Terminate TLS at a reverse proxy (nginx/Traefik/Caddy) in every environment and
+proxy requests to the backend over the internal network. The repo ships with
+`reverse-proxy/nginx.conf` as a starting point; adapt it to listen on `443` and
+serve your certificate, for example:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name argus.internal;
+
+    ssl_certificate     /etc/ssl/private/argus.crt;
+    ssl_certificate_key /etc/ssl/private/argus.key;
+
+    location /api/ {
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_pass http://argus_backend/;
+    }
+
+    location / {
+        proxy_pass http://argus_frontend/;
+    }
+}
+```
+
+Ensure the proxy adds the standard `X-Forwarded-*` headers so Express can honor
+them when `NODE_ENV=production` (see `backend/server.js`).
 
 ## Local Development
 Run services individually when you want hot reload or tighter iteration loops.

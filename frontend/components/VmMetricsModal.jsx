@@ -1,10 +1,12 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { X } from 'lucide-react';
 
 import Loading from './Loading.jsx';
 import ErrorBanner from './ErrorBanner.jsx';
 import MetricsChart from './MetricsChart.jsx';
+import { Button } from './ui/button.jsx';
 import { getMetricsHistory, getApiErrorMessage } from '../lib/api.js';
 
 const DEFAULT_HOURS = 24;
@@ -15,8 +17,7 @@ export default function VmMetricsModal({ visible, onClose, node, vmid }) {
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    if (!visible) return undefined;
-    if (!node || !vmid) return undefined;
+    if (!visible || !node || !vmid) return undefined;
 
     let cancelled = false;
 
@@ -53,19 +54,19 @@ export default function VmMetricsModal({ visible, onClose, node, vmid }) {
   if (!visible) return null;
 
   return (
-    <div style={styles.backdrop}>
-      <div style={styles.modal}>
-        <header style={styles.header}>
-          <div>
-            <h2 style={styles.title}>Metrics for VM {vmid}</h2>
-            <p style={styles.subtitle}>Node: {node}. Showing last {DEFAULT_HOURS} hours.</p>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 py-8 backdrop-blur-sm">
+      <div className="w-full max-w-4xl rounded-2xl border border-border/60 bg-card p-6 shadow-soft">
+        <header className="mb-6 flex items-start justify-between gap-4">
+          <div className="space-y-1">
+            <h2 className="text-2xl font-semibold text-foreground">Metrics for VM {vmid}</h2>
+            <p className="text-sm text-muted-foreground">Node {node}. Showing last {DEFAULT_HOURS} hours.</p>
           </div>
-          <button type="button" style={styles.closeButton} onClick={onClose}>
-            ×
-          </button>
+          <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close metrics modal">
+            <X className="h-5 w-5" />
+          </Button>
         </header>
 
-        <div style={styles.body}>
+        <div className="min-h-[22rem] space-y-4">
           {loading && <Loading label="Loading metrics…" />}
           {error && <ErrorBanner title={error.title} message={error.message} />}
           {!loading && !error && <MetricsChart data={data} />}
@@ -74,52 +75,3 @@ export default function VmMetricsModal({ visible, onClose, node, vmid }) {
     </div>
   );
 }
-
-const styles = {
-  backdrop: {
-    position: 'fixed',
-    top: 0,
-    left: 0,
-    width: '100vw',
-    height: '100vh',
-    backgroundColor: 'rgba(15, 23, 42, 0.75)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 1000,
-    padding: '2rem'
-  },
-  modal: {
-    width: 'min(900px, 100%)',
-    backgroundColor: '#0b1220',
-    borderRadius: '1rem',
-    border: '1px solid rgba(148, 163, 184, 0.25)',
-    padding: '1.5rem',
-    boxShadow: '0 25px 50px rgba(0, 0, 0, 0.35)'
-  },
-  header: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: '1rem'
-  },
-  title: {
-    margin: 0,
-    fontSize: '1.5rem',
-    color: '#e2e8f0'
-  },
-  subtitle: {
-    margin: '0.25rem 0 0',
-    color: '#94a3b8'
-  },
-  closeButton: {
-    background: 'none',
-    border: 'none',
-    color: '#94a3b8',
-    fontSize: '1.5rem',
-    cursor: 'pointer'
-  },
-  body: {
-    minHeight: '360px'
-  }
-};

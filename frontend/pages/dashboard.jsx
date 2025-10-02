@@ -2,20 +2,62 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
+import { PauseCircle, PlayCircle, RefreshCw } from 'lucide-react';
 
-import { getNodes, getClusterStatus, getQemuForNode, getLxcForNode, logout } from '../lib/api.js';
 import ClusterCard from '../components/ClusterCard.jsx';
-import VmListTable from '../components/VmListTable.jsx';
-import ErrorBanner from '../components/ErrorBanner.jsx';
 import Loading from '../components/Loading.jsx';
 import GlobalAlert from '../components/GlobalAlert.jsx';
-import { canOperate } from '../lib/role.js';
+import ErrorBanner from '../components/ErrorBanner.jsx';
+import VmListTable from '../components/VmListTable.jsx';
+import LxcListTable from '../components/LxcListTable.jsx';
 import VmMetricsModal from '../components/VmMetricsModal.jsx';
+import { Button } from '../components/ui/button.jsx';
+import { Badge } from '../components/ui/badge.jsx';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card.jsx';
+import {
+  getNodes,
+  getClusterStatus,
+  getQemuForNode,
+  getLxcForNode,
+  getMetricsHistory,
+  getApiErrorMessage,
+  getCurrentUser,
+  performVmAction
+} from '../lib/api.js';
+import MetricsChart from '../components/MetricsChart.jsx';
+import { Progress } from '../components/ui/progress.jsx';
+import { cn } from '../lib/utils.js';
+
+function formatNodeUptime(seconds) {
+  if (typeof seconds !== 'number' || Number.isNaN(seconds) || seconds < 0) return 'Unknown';
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const parts = [];
+  if (days) parts.push(`${days}d`);
+  if (hours) parts.push(`${hours}h`);
+  if (minutes) parts.push(`${minutes}m`);
+  return parts.length ? parts.join(' ') : `${seconds}s`;
+}
+
+function computeCpuPercent(cpuFraction) {
+  if (typeof cpuFraction !== 'number' || Number.isNaN(cpuFraction)) return 0;
+  return cpuFraction <= 1 ? cpuFraction * 100 : cpuFraction;
+}
+
+function computeMemPercent(mem, maxmem) {
+  if (typeof mem !== 'number' || typeof maxmem !== 'number' || maxmem <= 0) return 0;
+  return (mem / maxmem) * 100;
+}
 
 const REFRESH_INTERVAL_MS = 10000;
 
-function isForbidden(error) {
-  return error?.code === 'FORBIDDEN' || error?.status === 403;
+function statusBadgeVariant(status) {
+  const normalized = (status || '').toLowerCase();
+  if (normalized === 'online' || normalized === 'running') return 'success';
+  if (normalized === 'maintenance') return 'warning';
+  if (normalized === 'offline' || normalized === 'stopped') return 'destructive';
+  return 'outline';
 }
 
 export default function DashboardPage() {
@@ -27,14 +69,17 @@ export default function DashboardPage() {
   const [lxcItems, setLxcItems] = useState(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastUpdated, setLastUpdated] = useState(null);
+  const [userRole, setUserRole] = useState('viewer');
 
   const [nodesError, setNodesError] = useState(null);
   const [clusterError, setClusterError] = useState(null);
   const [qemuError, setQemuError] = useState(null);
   const [lxcError, setLxcError] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
-  const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [metricsVm, setMetricsVm] = useState(null);
+  const [previewVm, setPreviewVm] = useState(null);
+  const [nodeMetrics, setNodeMetrics] = useState({ vm: null, data: [], loading: false, error: null });
+  const [actionState, setActionState] = useState({ busyKey: null, message: null, type: null });
 
   const currentNode = useMemo(() => {
     if (!Array.isArray(nodes)) return null;
@@ -46,10 +91,9 @@ export default function DashboardPage() {
       const data = await getNodes();
       setNodes(data);
       setNodesError(null);
-
       if (data?.length) {
         const first = data[0].node;
-        setSelectedNode((prev) => (prev || first));
+        setSelectedNode((prev) => prev || first);
       }
     } catch (error) {
       setNodesError(error);
@@ -75,22 +119,25 @@ export default function DashboardPage() {
       return;
     }
 
+    setQemuItems(null);
+    setLxcItems(null);
+    setQemuError(null);
+    setLxcError(null);
+
     try {
       const data = await getQemuForNode(nodeName);
       setQemuItems(Array.isArray(data) ? data : []);
-      setQemuError(null);
     } catch (error) {
       setQemuError(error);
-      setQemuItems((prev) => (prev === null ? [] : prev));
+      setQemuItems([]);
     }
 
     try {
       const data = await getLxcForNode(nodeName);
       setLxcItems(Array.isArray(data) ? data : []);
-      setLxcError(null);
     } catch (error) {
       setLxcError(error);
-      setLxcItems((prev) => (prev === null ? [] : prev));
+      setLxcItems([]);
     }
   }, []);
 
@@ -106,31 +153,25 @@ export default function DashboardPage() {
   useEffect(() => {
     let cancelled = false;
 
-    const verifySession = async () => {
+    async function bootstrap() {
       try {
-        const response = await fetch('/api/me', { credentials: 'include' });
-
-        if (response.status === 401) {
-          router.replace('/login');
-          return;
-        }
-
-        if (!response.ok) {
-          throw new Error('Session check failed');
-        }
-
+        const user = await getCurrentUser();
         if (!cancelled) {
+          const normalized = String(user?.role || 'viewer').toLowerCase();
+          setUserRole(normalized);
           setAuthChecked(true);
         }
       } catch (error) {
-        console.error('Auth check failed:', error);
         if (!cancelled) {
-          router.replace('/login');
+          setAuthChecked(true);
+          if (error?.status === 401) {
+            router.replace('/login');
+          }
         }
       }
-    };
+    }
 
-    verifySession();
+    bootstrap();
 
     return () => {
       cancelled = true;
@@ -155,213 +196,377 @@ export default function DashboardPage() {
     }, REFRESH_INTERVAL_MS);
 
     return () => clearInterval(interval);
-  }, [selectedNode, autoRefresh, refreshAll, loadNodeResources]);
+  }, [selectedNode, autoRefresh, refreshAll, loadNodeResources, authChecked]);
 
-  const handleNodeChange = (event) => {
-    const nodeName = event.target.value;
+  useEffect(() => {
+    setPreviewVm(null);
+  }, [selectedNode]);
+
+  useEffect(() => {
+    if (!selectedNode) {
+      setNodeMetrics({ vm: null, data: [], loading: false, error: null });
+      return;
+    }
+
+    if (qemuItems === null) {
+      setNodeMetrics((prev) => ({ ...prev, vm: null, data: [], loading: true, error: null }));
+      return;
+    }
+
+    if (!Array.isArray(qemuItems) || qemuItems.length === 0) {
+      setNodeMetrics({ vm: null, data: [], loading: false, error: null });
+      return;
+    }
+
+    const targetVm = (() => {
+      if (previewVm && previewVm.node === selectedNode) {
+        return previewVm;
+      }
+      return qemuItems[0];
+    })();
+
+    if (!targetVm?.vmid) {
+      setNodeMetrics({ vm: null, data: [], loading: false, error: null });
+      return;
+    }
+
+    let cancelled = false;
+    setNodeMetrics({ vm: targetVm, data: [], loading: true, error: null });
+
+    getMetricsHistory({ node: selectedNode, vmid: targetVm.vmid, hours: 24 })
+      .then((metrics) => {
+        if (cancelled) return;
+        setNodeMetrics({ vm: targetVm, data: metrics, loading: false, error: null });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setNodeMetrics({
+          vm: targetVm,
+          data: [],
+          loading: false,
+          error: getApiErrorMessage(error, 'Metrics history unavailable')
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedNode, qemuItems, previewVm]);
+
+  const handleVmSelect = useCallback((vm) => {
+    if (!vm?.vmid) return;
+    setPreviewVm({ ...vm, node: selectedNode });
+    setMetricsVm({ vmid: vm.vmid, node: selectedNode });
+  }, [selectedNode]);
+
+  const handleNodeSelect = useCallback((nodeName) => {
     setSelectedNode(nodeName);
     loadNodeResources(nodeName);
-  };
+  }, [loadNodeResources]);
+
+  const handleVmAction = useCallback(
+    async (action, vm) => {
+      if (!selectedNode || !vm?.vmid || actionState.busyKey) return;
+      const key = `${action}-${vm.vmid}`;
+      setActionState({ busyKey: key, message: null, type: null });
+      try {
+        await performVmAction(action, { node: selectedNode, vmid: vm.vmid });
+        setActionState({ busyKey: null, message: `${action.toUpperCase()} request sent for VM ${vm.vmid}.`, type: 'info' });
+        await refreshAll();
+      } catch (error) {
+        setActionState({
+          busyKey: null,
+          message: getApiErrorMessage(error, `Failed to ${action} VM ${vm.vmid}`),
+          type: 'error'
+        });
+        if (error?.code === 'CSRF_ERROR' || error?.status === 401) {
+          router.replace('/login');
+        }
+      }
+    },
+    [actionState.busyKey, refreshAll, selectedNode, router]
+  );
 
   const anyOffline = Array.isArray(nodes) && nodes.some((node) => (node.status || '').toLowerCase() !== 'online');
-  const hasNodes = Array.isArray(nodes) && nodes.length > 0;
 
-  const triggerProtected = async () => {
-    try {
-      const response = await fetch('/api/protected', { credentials: 'include' });
-      const payload = await response.json();
-      console.log('Protected response:', payload);
-    } catch (error) {
-      console.error('Protected request failed:', error);
+  const clusterSummary = useMemo(() => {
+    const summary = {
+      quorum: null,
+      services: [],
+      nodeOnline: 0,
+      nodeOffline: 0,
+      totalNodes: 0
+    };
+
+    for (const entry of clusterStatus) {
+      if (entry.type === 'quorum') {
+        summary.quorum = entry;
+      }
+      if (entry.type === 'service') {
+        summary.services.push({ name: entry.id || entry.name || 'service', status: entry.status || entry.state });
+      }
+      if (entry.type === 'node') {
+        summary.totalNodes += 1;
+        const isOnline = (entry.status || entry.state || entry.health || '').toLowerCase() === 'online';
+        if (isOnline) {
+          summary.nodeOnline += 1;
+        } else {
+          summary.nodeOffline += 1;
+        }
+      }
     }
-  };
 
-  const handleLogout = async () => {
-    if (isLoggingOut) return;
-    setIsLoggingOut(true);
-    try {
-      await logout();
-    } catch (error) {
-      console.error('Logout failed:', error);
-    } finally {
-      setIsLoggingOut(false);
-      router.replace('/login');
-    }
-  };
-
-  if (!authChecked) {
-    return <Loading label="Verifying session…" />;
-  }
+    return summary;
+  }, [clusterStatus]);
 
   return (
-    <main style={styles.page}>
-      <header style={styles.header}>
-        <h1 style={styles.title}>Argus Dashboard</h1>
-        <p style={styles.subtitle}>Cluster overview with live Proxmox data.</p>
-        {lastUpdated && (
-          <p style={styles.updated}>Last updated: {new Date(lastUpdated).toLocaleTimeString()}</p>
-        )}
-        <button
-          type="button"
-          onClick={handleLogout}
-          style={{ ...styles.logoutButton, opacity: isLoggingOut ? 0.7 : 1 }}
-          disabled={isLoggingOut}
-        >
-          {isLoggingOut ? 'Signing out…' : 'Sign out'}
-        </button>
-      </header>
-
-      {clusterError && (
-        <GlobalAlert type="error" message="Cluster communication problem" />
+    <div className="space-y-6">
+      {actionState.message && (
+        <GlobalAlert type={actionState.type === 'error' ? 'error' : 'info'} message={actionState.message} />
       )}
 
-      {!clusterError && anyOffline && (
-        <GlobalAlert type="warning" message="One or more nodes are offline" />
-      )}
-
-      <section style={styles.controlsRow}>
-        <label style={styles.toggleLabel}>
-          <input
-            type="checkbox"
-            checked={autoRefresh}
-            onChange={(event) => setAutoRefresh(event.target.checked)}
-          />
-          Auto-refresh every 10s
-        </label>
-      </section>
-
-      {nodesError && (
-        <ErrorBanner
-          title="Failed to load nodes"
-          message={nodesError.message}
-          hint={nodesError.hint}
-        />
-      )}
-
-      {clusterError && (
-        <ErrorBanner
-          title="Cluster status unavailable"
-          message={isForbidden(clusterError)
-            ? "Cluster status requires Sys.Audit permissions at '/'"
-            : clusterError.message}
-          hint={clusterError.hint}
-        />
-      )}
-
-      {!nodes && !nodesError && <Loading label="Loading nodes…" />}
-
-      {Array.isArray(nodes) && nodes.length === 0 && !nodesError && (
-        <GlobalAlert type="info" message="No nodes available" />
-      )}
-
-      {hasNodes && (
-        <>
-          <section style={styles.selectorRow}>
-            <label htmlFor="node-select" style={styles.selectLabel}>
-              Select node:
-            </label>
-            <select
-              id="node-select"
-              value={selectedNode}
-              onChange={handleNodeChange}
-              style={styles.select}
+      <Card className="bg-card/80 shadow-soft">
+        <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <CardTitle>Cluster controls</CardTitle>
+            <CardDescription>Manage refresh cadence and keep-togethers.</CardDescription>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              type="button"
+              variant={autoRefresh ? 'secondary' : 'outline'}
+              className="min-w-[160px] justify-center"
+              onClick={() => setAutoRefresh((value) => !value)}
+              disabled={Boolean(actionState.busyKey)}
             >
-              {nodes.map((node) => (
-                <option key={node.node} value={node.node}>
-                  {node.node}
-                </option>
-              ))}
-            </select>
-          </section>
-
-          <section style={styles.nodeGrid}>
-            {nodes.map((node) => {
-              const normalized = (node.status || '').toLowerCase();
-              const isOnline = normalized === 'online';
-              const isSelected = node.node === selectedNode;
-
-              return (
-                <button
-                  key={`mini-${node.node}`}
-                  type="button"
-                  style={{
-                    ...styles.nodeCard,
-                    ...(isSelected ? styles.nodeCardSelected : null)
-                  }}
-                  onClick={() => setSelectedNode(node.node)}
-                >
-                  <span>{node.node}</span>
-                  <span style={{
-                    ...styles.nodeStatus,
-                    color: isOnline ? '#4ade80' : '#f87171'
-                  }}>
-                    {node.status || 'unknown'}
-                  </span>
-                </button>
-              );
-            })}
-          </section>
-
-          {canOperate() && (
-            <button type="button" style={styles.operatorButton} onClick={triggerProtected}>
-              Dummy Operator Button
-            </button>
-          )}
-        </>
-      )}
-
-      {hasNodes && currentNode ? (
-        <ClusterCard node={currentNode} />
-      ) : hasNodes ? (
-        <Loading label="Waiting for node details…" />
-      ) : null}
-
-      {clusterStatus.length > 0 && (
-        <section style={styles.clusterStatus}>
-          <h3 style={styles.clusterTitle}>Cluster Status</h3>
-          <ul style={styles.clusterList}>
-            {clusterStatus.map((entry) => (
-              <li key={`${entry.type}-${entry.id || entry.node || entry.name}`} style={styles.clusterItem}>
-                <span>{entry.type}</span>
-                <span>{entry.id || entry.node || entry.name || '—'}</span>
-                <span>{entry.status || entry.state || entry.health || 'unknown'}</span>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-
-      {hasNodes && (
-        <section style={styles.tablesWrapper}>
-          <div style={styles.tableColumn}>
-            {qemuError && (
-              <ErrorBanner
-                title="Unable to load QEMU VMs"
-                message={qemuError.message}
-                hint={qemuError.hint}
-              />
+              {autoRefresh ? (
+                <>
+                  <PauseCircle className="mr-2 h-4 w-4" />
+                  Auto-refresh on
+                </>
+              ) : (
+                <>
+                  <PlayCircle className="mr-2 h-4 w-4" />
+                  Auto-refresh off
+                </>
+              )}
+            </Button>
+            <Button type="button" variant="outline" onClick={refreshAll} className="justify-center" disabled={Boolean(actionState.busyKey)}>
+              <RefreshCw className="mr-2 h-4 w-4" /> Refresh now
+            </Button>
+            {lastUpdated && (
+              <Badge variant="outline" className="text-xs uppercase tracking-wide">
+                Updated {new Date(lastUpdated).toLocaleTimeString()}
+              </Badge>
             )}
+          </div>
+        </CardHeader>
+        <CardContent>
+          {clusterError && (
+            <ErrorBanner
+              title="Cluster status unavailable"
+              message={clusterError.message}
+              hint={clusterError.hint}
+            />
+          )}
+          {nodesError && (
+            <ErrorBanner title="Failed to load nodes" message={nodesError.message} hint={nodesError.hint} />
+          )}
+          {anyOffline && !clusterError && (
+            <GlobalAlert type="warning" message="One or more nodes are offline." />
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="bg-card/80 shadow-soft">
+        <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <CardTitle>Node grid</CardTitle>
+            <CardDescription>Select a node to focus workloads and metrics.</CardDescription>
+          </div>
+          <Badge variant="outline" className="text-xs uppercase tracking-wide">
+            {selectedNode ? `Selected: ${selectedNode}` : 'Select a node'}
+          </Badge>
+        </CardHeader>
+        <CardContent>
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {Array.isArray(nodes) && nodes.length > 0 ? (
+              nodes.map((node) => {
+                const normalizedStatus = (node.status || '').toLowerCase();
+                const isActive = node.node === selectedNode;
+                const cpuPercent = computeCpuPercent(node.cpu ?? 0);
+                const memPercent = computeMemPercent(node.mem, node.maxmem);
+
+                return (
+                  <button
+                    key={node.node}
+                    type="button"
+                    onClick={() => handleNodeSelect(node.node)}
+                    className={cn(
+                      'flex h-full flex-col gap-4 rounded-xl border border-border/60 bg-background/60 p-4 text-left transition-colors duration-200 hover:border-primary/60 hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
+                      isActive && 'border-primary shadow-lg shadow-primary/30'
+                    )}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="space-y-1 text-sm">
+                        <p className="font-semibold text-foreground">{node.node}</p>
+                        <p className="text-muted-foreground">Uptime: {formatNodeUptime(node.uptime)}</p>
+                      </div>
+                      <Badge variant={statusBadgeVariant(node.status)}>{node.status || 'unknown'}</Badge>
+                    </div>
+                    <div className="space-y-3">
+                      <div>
+                        <div className="flex items-center justify-between text-xs text-muted-foreground">
+                          <span>CPU</span>
+                          <span className="font-semibold text-foreground">{cpuPercent.toFixed(1)}%</span>
+                        </div>
+                        <Progress
+                          value={cpuPercent}
+                          indicatorClassName={cn(
+                            cpuPercent >= 92 ? 'bg-destructive' : cpuPercent >= 75 ? 'bg-amber-400' : 'bg-primary'
+                          )}
+                        />
+                      </div>
+                      <div>
+                        <div className="flex items-center justify-between text-xs text-muted-foreground">
+                          <span>RAM</span>
+                          <span className="font-semibold text-foreground">{memPercent ? memPercent.toFixed(1) : '—'}%</span>
+                        </div>
+                        <Progress
+                          value={memPercent}
+                          indicatorClassName={cn(
+                            memPercent >= 92 ? 'bg-destructive' : memPercent >= 75 ? 'bg-amber-400' : 'bg-primary'
+                          )}
+                        />
+                      </div>
+                    </div>
+                  </button>
+                );
+              })
+            ) : (
+              <p className="rounded-lg border border-dashed border-border/60 bg-card/40 p-6 text-center text-sm text-muted-foreground">
+                No nodes available.
+              </p>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="bg-card/80 shadow-soft">
+        <CardHeader>
+          <CardTitle>Node details</CardTitle>
+          <CardDescription>Expanded metrics, workloads, and history for the selected node.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {currentNode ? (
+            <ClusterCard node={currentNode} />
+          ) : (
+            <div className="rounded-lg border border-dashed border-border/60 bg-card/40 p-8 text-center text-sm text-muted-foreground">
+              Select a node to view details.
+            </div>
+          )}
+
+          {nodeMetrics.vm && (
+            <div className="space-y-2">
+              <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-sm text-muted-foreground">
+                  Metrics preview • {nodeMetrics.vm.name || `VM ${nodeMetrics.vm.vmid}`}
+                </p>
+                <Badge variant="outline" className="text-xs uppercase tracking-wide">
+                  Last 24 hours
+                </Badge>
+              </div>
+              {nodeMetrics.loading ? (
+                <Loading label="Loading metrics…" />
+              ) : nodeMetrics.error ? (
+                <ErrorBanner title="Unable to load metrics" message={nodeMetrics.error} />
+              ) : (
+                <MetricsChart data={nodeMetrics.data} />
+              )}
+            </div>
+          )}
+
+          {qemuError && (
+            <ErrorBanner title="Unable to load VMs" message={qemuError.message} hint={qemuError.hint} />
+          )}
+          {lxcError && (
+            <ErrorBanner title="Unable to load containers" message={lxcError.message} hint={lxcError.hint} />
+          )}
+
+          <div className="grid gap-6 xl:grid-cols-2">
             <VmListTable
               title="Virtual Machines (QEMU)"
               items={qemuItems}
-              onVmSelect={(vm) => {
-                if (!vm?.vmid) return;
-                setMetricsVm({ vmid: vm.vmid, node: selectedNode });
-              }}
+              onVmSelect={handleVmSelect}
+              onVmAction={handleVmAction}
+              role={userRole}
+              actionBusyKey={actionState.busyKey}
             />
+            <LxcListTable title="Containers (LXC)" items={lxcItems} />
           </div>
-          <div style={styles.tableColumn}>
-            {lxcError && (
-              <ErrorBanner
-                title="Unable to load LXC containers"
-                message={lxcError.message}
-                hint={lxcError.hint}
-              />
-            )}
-            <VmListTable title="Containers (LXC)" items={lxcItems} />
+        </CardContent>
+      </Card>
+
+      <Card className="bg-card/80 shadow-soft">
+        <CardHeader className="flex items-center justify-between">
+          <div>
+            <CardTitle>Cluster status</CardTitle>
+            <CardDescription>Quorum, services, and node availability.</CardDescription>
           </div>
-        </section>
-      )}
+          <Badge variant="outline" className="uppercase tracking-wide text-xs">
+            {clusterSummary.nodeOnline}/{clusterSummary.totalNodes} online
+          </Badge>
+        </CardHeader>
+        <CardContent>
+          {clusterStatus.length > 0 ? (
+            <div className="grid gap-4 md:grid-cols-3">
+              <div className="rounded-lg border border-border/40 bg-background/40 p-4">
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Quorum</p>
+                <p className="mt-2 text-sm font-semibold text-foreground">Cluster Quorum</p>
+                <Badge
+                  variant={statusBadgeVariant(
+                    clusterSummary.quorum?.status || clusterSummary.quorum?.state || clusterSummary.quorum?.health
+                  )}
+                  className="mt-3"
+                >
+                  {clusterSummary.quorum?.status || clusterSummary.quorum?.state || clusterSummary.quorum?.health || 'unknown'}
+                </Badge>
+              </div>
+              <div className="rounded-lg border border-border/40 bg-background/40 p-4">
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Core services</p>
+                <ul className="mt-3 space-y-2 text-sm">
+                  {clusterSummary.services.map((service) => (
+                    <li key={service.name} className="flex items-center justify-between">
+                      <span className="text-muted-foreground">{service.name}</span>
+                      <Badge variant={statusBadgeVariant(service.status)}>{service.status}</Badge>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <div className="rounded-lg border border-border/40 bg-background/40 p-4">
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Node availability</p>
+                <div className="mt-3 flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground">Online</span>
+                  <Badge variant="success">{clusterSummary.nodeOnline}</Badge>
+                </div>
+                <div className="mt-2 flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground">Offline</span>
+                  <Badge variant={clusterSummary.nodeOffline > 0 ? 'destructive' : 'outline'}>
+                    {clusterSummary.nodeOffline}
+                  </Badge>
+                </div>
+                <div className="mt-4 text-xs text-muted-foreground">
+                  {clusterSummary.totalNodes} nodes total
+                </div>
+              </div>
+            </div>
+          ) : (
+            <p className="rounded-lg border border-dashed border-border/60 bg-card/40 p-6 text-center text-sm text-muted-foreground">
+              No cluster status information available.
+            </p>
+          )}
+        </CardContent>
+      </Card>
 
       <VmMetricsModal
         visible={Boolean(metricsVm)}
@@ -369,136 +574,6 @@ export default function DashboardPage() {
         node={metricsVm?.node}
         vmid={metricsVm?.vmid}
       />
-    </main>
+    </div>
   );
 }
-
-const styles = {
-  page: {
-    fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif',
-    padding: '2rem',
-    backgroundColor: '#0f172a',
-    minHeight: '100vh',
-    color: '#e2e8f0'
-  },
-  header: {
-    marginBottom: '2rem'
-  },
-  title: {
-    margin: 0,
-    fontSize: '2rem'
-  },
-  subtitle: {
-    marginTop: '0.5rem',
-    color: '#94a3b8'
-  },
-  updated: {
-    marginTop: '0.4rem',
-    color: '#38bdf8'
-  },
-  logoutButton: {
-    marginTop: '1rem',
-    padding: '0.5rem 0.9rem',
-    borderRadius: '0.5rem',
-    border: '1px solid rgba(148, 163, 184, 0.35)',
-    backgroundColor: '#1e293b',
-    color: '#e2e8f0',
-    cursor: 'pointer',
-    fontWeight: 600
-  },
-  selectorRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '1rem',
-    marginBottom: '1.5rem'
-  },
-  controlsRow: {
-    marginBottom: '1.5rem'
-  },
-  toggleLabel: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: '0.5rem',
-    color: '#cbd5f5'
-  },
-  nodeGrid: {
-    display: 'grid',
-    gap: '0.75rem',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
-    marginBottom: '1.5rem'
-  },
-  nodeCard: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    border: '1px solid rgba(148, 163, 184, 0.2)',
-    borderRadius: '0.65rem',
-    padding: '0.65rem 0.75rem',
-    backgroundColor: '#111c30',
-    color: '#e2e8f0',
-    cursor: 'pointer',
-    transition: 'border-color 0.2s ease, background-color 0.2s ease'
-  },
-  nodeCardSelected: {
-    borderColor: '#a855f7',
-    backgroundColor: '#171f36'
-  },
-  nodeStatus: {
-    fontWeight: 600
-  },
-  operatorButton: {
-    marginTop: '1rem',
-    padding: '0.6rem 1rem',
-    borderRadius: '0.5rem',
-    border: '1px solid rgba(168, 85, 247, 0.6)',
-    backgroundColor: 'rgba(168, 85, 247, 0.1)',
-    color: '#f3e8ff',
-    cursor: 'pointer',
-    fontWeight: 600
-  },
-  selectLabel: {
-    color: '#cbd5f5'
-  },
-  select: {
-    backgroundColor: '#10192c',
-    color: '#e2e8f0',
-    borderRadius: '0.4rem',
-    border: '1px solid rgba(148, 163, 184, 0.35)',
-    padding: '0.5rem 0.75rem'
-  },
-  tablesWrapper: {
-    display: 'grid',
-    gap: '1.5rem',
-    marginTop: '2rem',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))'
-  },
-  clusterStatus: {
-    marginTop: '1.5rem',
-    border: '1px solid rgba(148, 163, 184, 0.2)',
-    borderRadius: '0.75rem',
-    padding: '1rem',
-    backgroundColor: '#111c30'
-  },
-  clusterTitle: {
-    margin: '0 0 0.75rem'
-  },
-  clusterList: {
-    listStyle: 'none',
-    padding: 0,
-    margin: 0,
-    display: 'grid',
-    gap: '0.5rem'
-  },
-  clusterItem: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    gap: '1rem',
-    fontSize: '0.9rem',
-    color: '#cbd5f5'
-  },
-  tableColumn: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '0.75rem'
-  }
-};

@@ -2,18 +2,34 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { AlertCircle, Bell, Info } from 'lucide-react';
 
 import ErrorBanner from '../components/ErrorBanner.jsx';
 import Loading from '../components/Loading.jsx';
+import { Badge } from '../components/ui/badge.jsx';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card.jsx';
+import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert.jsx';
 import { getAlerts, getApiErrorMessage } from '../lib/api.js';
 
 const REFRESH_INTERVAL_MS = 30000;
+
+function alertConfig(severity) {
+  switch ((severity || '').toLowerCase()) {
+    case 'critical':
+      return { variant: 'destructive', Icon: AlertCircle };
+    case 'warning':
+      return { variant: 'warning', Icon: Bell };
+    default:
+      return { variant: 'info', Icon: Info };
+  }
+}
 
 export default function AlertsPage() {
   const router = useRouter();
   const [alerts, setAlerts] = useState([]);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [dismissedIds, setDismissedIds] = useState(new Set());
 
   useEffect(() => {
     let cancelled = false;
@@ -53,85 +69,65 @@ export default function AlertsPage() {
   }, [router]);
 
   return (
-    <main style={styles.page}>
-      <h1 style={styles.title}>Alerts</h1>
-      <p style={styles.subtitle}>Synthetic alerts (refreshing every 30 seconds).</p>
+    <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
+      <header className="space-y-2">
+        <h1 className="text-3xl font-bold tracking-tight">Alerts</h1>
+        <p className="text-muted-foreground">Synthetic alerts refreshing every 30 seconds.</p>
+      </header>
 
-      {error && (
-        <ErrorBanner title={error.title} message={error.message} />
-      )}
+      {error && <ErrorBanner title={error.title} message={error.message} />}
 
       {loading && <Loading label="Loading alerts…" />}
 
       {!loading && !error && (
-        <ul style={styles.list}>
+        <div className="grid gap-4">
           {alerts.length === 0 ? (
-            <li style={styles.empty}>No alerts at the moment.</li>
+            <Card className="border-dashed border-border/60 bg-card/60 p-8 text-center text-sm text-muted-foreground">
+              No alerts at the moment.
+            </Card>
           ) : (
-            alerts.map((alert) => (
-              <li key={alert.id} style={{ ...styles.alert, ...severityStyles(alert.severity) }}>
-                <strong>{alert.severity?.toUpperCase()}</strong>
-                <span>{alert.message}</span>
-                <time>{new Date(alert.ts).toLocaleString()}</time>
-              </li>
-            ))
+            alerts
+              .filter((alert) => !dismissedIds.has(alert.id))
+              .map((alert) => {
+                const { variant, Icon } = alertConfig(alert.severity);
+                const timestamp = new Date(alert.ts).toLocaleString();
+
+                return (
+                  <Alert key={alert.id} variant={variant} className="relative border border-border/50 bg-card/90">
+                    <div className="flex items-start gap-3">
+                      <span className="mt-0.5 text-foreground">
+                        <Icon className="h-5 w-5" />
+                      </span>
+                      <div className="flex-1 space-y-2">
+                        <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                          <AlertTitle className="text-base font-semibold text-foreground">
+                            {alert.message}
+                          </AlertTitle>
+                          <Badge variant="outline" className="uppercase tracking-wide text-xs">
+                            {alert.severity || 'info'}
+                          </Badge>
+                        </div>
+                        <AlertDescription className="space-y-2 text-sm text-muted-foreground">
+                          <p>{timestamp}</p>
+                          {alert.details && <p>{alert.details}</p>}
+                        </AlertDescription>
+                      </div>
+                      <button
+                        type="button"
+                        className="ml-3 text-xs uppercase tracking-wide text-muted-foreground transition hover:text-foreground"
+                        onClick={() => {
+                          setDismissedIds((prev) => new Set(prev).add(alert.id));
+                        }}
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  </Alert>
+                );
+              })
           )}
-        </ul>
+        </div>
       )}
-    </main>
+    </div>
   );
 }
-
-function severityStyles(severity) {
-  switch (severity) {
-    case 'critical':
-      return { borderLeft: '6px solid #f87171', backgroundColor: 'rgba(248, 113, 113, 0.1)' };
-    case 'warning':
-      return { borderLeft: '6px solid #facc15', backgroundColor: 'rgba(250, 204, 21, 0.1)' };
-    case 'info':
-    default:
-      return { borderLeft: '6px solid #38bdf8', backgroundColor: 'rgba(56, 189, 248, 0.1)' };
-  }
-}
-
-const styles = {
-  page: {
-    padding: '2rem',
-    minHeight: '100vh',
-    background: '#0f172a',
-    color: '#f8fafc',
-    fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif'
-  },
-  title: {
-    margin: 0,
-    fontSize: '2rem',
-    fontWeight: 600
-  },
-  subtitle: {
-    marginTop: '0.25rem',
-    marginBottom: '1.5rem',
-    color: '#94a3b8'
-  },
-  list: {
-    listStyle: 'none',
-    padding: 0,
-    margin: 0,
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '1rem'
-  },
-  alert: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '0.35rem',
-    padding: '1rem',
-    borderRadius: '0.75rem'
-  },
-  empty: {
-    textAlign: 'center',
-    padding: '2rem',
-    borderRadius: '0.75rem',
-    background: 'rgba(255,255,255,0.05)',
-    color: '#94a3b8'
-  }
-};

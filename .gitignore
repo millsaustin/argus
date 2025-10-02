@@ -8,6 +8,8 @@ yarn-error.log*
 .env
 .env.*
 !.env.example
+!**/.env.example
+!**/.env.local.example
 
 # Local GitHub token (do not commit real token)
 .github_token
@@ -17,3 +19,6 @@ yarn-error.log*
 
 # Docker
 *.pid
+
+# Backups
+backup/

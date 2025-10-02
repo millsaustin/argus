@@ -1,8 +1,10 @@
 import Joi from 'joi';
 
-import { pvePost } from './proxmoxClient.js';
+import { pvePost, getVmPool } from './proxmoxClient.js';
 import { recordAudit } from './auditLog.js';
 import { acquireLock, releaseLock, buildResourceKey } from './lockManager.js';
+import { notifyVmAction } from '../services/notify.js';
+import { hasPoolAccess } from './auth.js';
 
 const actionSchema = Joi.object({
   node: Joi.string().trim().required(),
@@ -11,6 +13,22 @@ const actionSchema = Joi.object({
 
 const idempotencyCache = new Map();
 export const destructiveActions = new Set(['stop', 'reboot']);
+
+async function safeNotifyVm(payload) {
+  try {
+    await notifyVmAction(payload);
+  } catch (error) {
+    console.error('VM action notification failed:', error);
+    recordAudit({
+      user: 'system',
+      role: 'system',
+      action: 'notify_vm_action',
+      result: 'fail',
+      message: error.message,
+      metadata: payload
+    });
+  }
+}
 
 export function createActionHandler(action) {
   return async function handleAction(req, res) {
@@ -41,6 +59,80 @@ export function createActionHandler(action) {
     }
 
     const { node, vmid } = value;
+
+    const sessionUser = req.session?.user;
+    let pool = null;
+    let poolAllowed = true;
+    let poolReason = 'Pool access denied for VM action';
+    try {
+      pool = await getVmPool(node, vmid);
+    } catch (poolError) {
+      poolAllowed = false;
+      poolReason = `Unable to resolve pool for VM ${vmid}: ${poolError.message}`;
+      recordAudit({
+        user: sessionUser?.username || 'unknown',
+        role: sessionUser?.role || 'unknown',
+        action: `proxmox_${action}`,
+        node,
+        vmid,
+        pool: 'unknown',
+        result: 'deny',
+        reason: poolReason
+      });
+    }
+
+    if (poolAllowed) {
+      const context = {
+        action: `proxmox_${action}`,
+        node,
+        vmid,
+        pool: pool || 'unknown',
+        reason: 'Pool access denied for VM action'
+      };
+      if (req.assertPoolAccess) {
+        poolAllowed = req.assertPoolAccess(pool, context);
+        if (!poolAllowed) {
+          poolReason = context.reason;
+        }
+      } else if (req.hasPoolAccess) {
+        poolAllowed = req.hasPoolAccess(pool);
+        if (!poolAllowed) {
+          poolReason = context.reason;
+          recordAudit({
+            user: sessionUser?.username || 'unknown',
+            role: sessionUser?.role || 'unknown',
+            action: context.action,
+            node,
+            vmid,
+            pool: context.pool,
+            result: 'deny',
+            reason: context.reason
+          });
+        }
+      } else if (!hasPoolAccess(sessionUser, pool)) {
+        poolAllowed = false;
+        poolReason = context.reason;
+        recordAudit({
+          user: sessionUser?.username || 'unknown',
+          role: sessionUser?.role || 'unknown',
+          action: context.action,
+          node,
+          vmid,
+          pool: context.pool,
+          result: 'deny',
+          reason: context.reason
+        });
+      }
+    }
+
+    if (!poolAllowed) {
+      return res.status(403).json({
+        ok: false,
+        code: 'POOL_FORBIDDEN',
+        message: poolReason
+      });
+    }
+
     const lockKey = buildResourceKey(node, vmid);
 
     if (!acquireLock(lockKey)) {
@@ -64,9 +156,19 @@ export function createActionHandler(action) {
       releaseLock(lockKey);
       const auditEntry = {
         ...auditBase,
-        result: 'pending_approval'
+        result: 'pending_approval',
+        request: { action, node, vmid }
       };
       recordAudit(auditEntry);
+      await safeNotifyVm({
+        action,
+        node,
+        vmid,
+        status: 'pending_approval',
+        requestedBy: auditBase.user,
+        role: auditBase.role,
+        details: 'Dual control required'
+      });
       idempotencyCache.set(idempotencyKey, auditEntry);
       return res.json({
         ok: true,
@@ -80,9 +182,19 @@ export function createActionHandler(action) {
       const response = await performVmAction(action, node, vmid);
       const auditEntry = {
         ...auditBase,
-        result: 'success'
+        result: 'success',
+        request: { action, node, vmid },
+        response
       };
       recordAudit(auditEntry);
+      await safeNotifyVm({
+        action,
+        node,
+        vmid,
+        status: 'success',
+        requestedBy: auditBase.user,
+        role: auditBase.role
+      });
       idempotencyCache.set(idempotencyKey, auditEntry);
       return res.json({ ok: true, result: response });
     } catch (err) {
@@ -90,9 +202,21 @@ export function createActionHandler(action) {
       const status = Number(err?.status) || 502;
       const auditEntry = {
         ...auditBase,
-        result: 'fail'
+        result: 'fail',
+        request: { action, node, vmid },
+        response: err?.payload || null,
+        message: safeMessage
       };
       recordAudit(auditEntry);
+      await safeNotifyVm({
+        action,
+        node,
+        vmid,
+        status: 'fail',
+        requestedBy: auditBase.user,
+        role: auditBase.role,
+        details: safeMessage
+      });
       idempotencyCache.set(idempotencyKey, auditEntry);
       return res.status(status).json({
         ok: false,

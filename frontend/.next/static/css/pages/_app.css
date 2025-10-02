@@ -1,0 +1,14 @@
+/*!***********************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************!*\
+  !*** css ./node_modules/next/dist/build/webpack/loaders/css-loader/src/index.js??ruleSet[1].rules[14].oneOf[2].use[1]!./node_modules/next/dist/build/webpack/loaders/next-font-loader/index.js??ruleSet[1].rules[14].oneOf[2].use[2]!./node_modules/next/font/google/target.css?{"path":"pages/_app.jsx","import":"Inter","arguments":[{"subsets":["latin"],"variable":"--font-inter","display":"swap"}],"variableName":"inter"} ***!
+  \***********************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************************/
+@font-face {
+  font-family: 'Inter Fallback';
+  src: local("Arial");
+  ascent-override:90.44%;
+  descent-override:22.52%;
+  line-gap-override:0.00%;
+  size-adjust:107.12%;
+}@font-face {font-family: 'Inter Fallback Fallback';src: local("Arial");ascent-override: 90.44%;descent-override: 22.52%;line-gap-override: 0.00%;size-adjust: 107.12%
+}.__className_ece556 {font-family: 'Inter Fallback', 'Inter Fallback Fallback';font-style: normal
+}.__variable_ece556 {--font-inter: 'Inter Fallback', 'Inter Fallback Fallback'
+}

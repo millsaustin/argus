@@ -1,5 +1,25 @@
-const DEFAULT_PROXMOX_BASE = 'http://localhost:3001/api/proxmox';
-const API_ROOT = '/api';
+function getBackendBase() {
+  const fromEnv = process.env.NEXT_PUBLIC_BACKEND_BASE;
+  const trimmed = fromEnv ? fromEnv.trim() : '';
+  if (trimmed) {
+    return trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed;
+  }
+
+  if (process.env.NODE_ENV !== 'production') {
+    return 'http://localhost:3001';
+  }
+
+  return '';
+}
+
+const BACKEND_BASE = getBackendBase();
+const DEFAULT_PROXMOX_BASE = BACKEND_BASE
+  ? `${BACKEND_BASE}/api/proxmox`
+  : process.env.NODE_ENV !== 'production'
+    ? 'http://localhost:3001/api/proxmox'
+    : '/api/proxmox';
+const API_ROOT = BACKEND_BASE ? `${BACKEND_BASE}/api` : '/api';
+export const apiRoot = API_ROOT;
 
 let csrfToken = null;
 
@@ -176,6 +196,36 @@ export async function postJson(path, body = {}) {
   return payload;
 }
 
+export async function putJson(path, body = {}) {
+  const response = await apiFetch(path, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+
+  const payload = await safeJson(response);
+  if (!response.ok) {
+    const error = buildApiError(response, payload, 'Request failed');
+    throw error;
+  }
+
+  return payload;
+}
+
+export async function deleteJson(path) {
+  const response = await apiFetch(path, {
+    method: 'DELETE'
+  });
+
+  const payload = await safeJson(response);
+  if (!response.ok) {
+    const error = buildApiError(response, payload, 'Request failed');
+    throw error;
+  }
+
+  return payload;
+}
+
 export function getNodes() {
   return request('/nodes');
 }
@@ -194,8 +244,12 @@ export function getLxcForNode(node) {
   return request(`/nodes/${encoded}/lxc`);
 }
 
-export async function getRecentLogs({ limit = 100, offset = 0 } = {}) {
+export async function getRecentLogs({ limit = 100, offset = 0, user, action, from, to } = {}) {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (user) params.set('user', user);
+  if (action) params.set('action', action);
+  if (from) params.set('from', new Date(from).toISOString());
+  if (to) params.set('to', new Date(to).toISOString());
   const response = await apiFetch(`${API_ROOT}/logs/recent?${params.toString()}`, {
     method: 'GET',
     requireCsrf: false
@@ -208,6 +262,125 @@ export async function getRecentLogs({ limit = 100, offset = 0 } = {}) {
   }
 
   return payload.entries || [];
+}
+
+export async function getCurrentUser() {
+  const response = await apiFetch(`${API_ROOT}/me`, {
+    method: 'GET',
+    requireCsrf: false
+  });
+  const payload = await safeJson(response);
+
+  if (!response.ok || !payload?.ok) {
+    const error = buildApiError(response, payload, 'Failed to fetch session');
+    throw error;
+  }
+
+  return payload.user;
+}
+
+export async function submitAssistantPrompt(prompt) {
+  if (!prompt || typeof prompt !== 'string') {
+    throw new Error('Prompt is required');
+  }
+
+  const response = await postJson(`${API_ROOT}/assistant/propose`, {
+    prompt
+  });
+
+  if (!response?.ok) {
+    const error = buildApiError(null, response, 'Failed to submit prompt');
+    throw error;
+  }
+
+  return response;
+}
+
+export async function getProposals() {
+  const response = await apiFetch(`${API_ROOT}/assistant/proposals`, {
+    method: 'GET',
+    requireCsrf: false
+  });
+  const payload = await safeJson(response);
+
+  if (!response.ok || !payload?.ok) {
+    const error = buildApiError(response, payload, 'Failed to fetch proposals');
+    throw error;
+  }
+
+  return payload.proposals || [];
+}
+
+export async function respondToProposal(id, decision = 'approve') {
+  const response = await postJson(`${API_ROOT}/assistant/confirm/${encodeURIComponent(id)}`, {
+    decision
+  });
+  return response;
+}
+
+export async function getLogUsers() {
+  const response = await apiFetch(`${API_ROOT}/logs/users`, {
+    method: 'GET',
+    requireCsrf: false
+  });
+  const payload = await safeJson(response);
+
+  if (!response.ok || !payload?.ok) {
+    const error = buildApiError(response, payload, 'Failed to fetch log users');
+    throw error;
+  }
+
+  return payload.users || [];
+}
+
+export async function getUsers() {
+  const response = await apiFetch(`${API_ROOT}/users`, {
+    method: 'GET',
+    requireCsrf: true
+  });
+  const payload = await safeJson(response);
+
+  if (!response.ok || !payload?.ok) {
+    const error = buildApiError(response, payload, 'Failed to fetch users');
+    throw error;
+  }
+
+  return payload.users || [];
+}
+
+export async function createUserAccount({ username, password, role }) {
+  const payload = await postJson(`${API_ROOT}/users`, {
+    username,
+    password,
+    role
+  });
+
+  if (!payload?.ok) {
+    const error = buildApiError(null, payload, 'Failed to create user');
+    throw error;
+  }
+
+  return payload.user;
+}
+
+export async function updateUserAccount(id, body) {
+  const payload = await putJson(`${API_ROOT}/users/${encodeURIComponent(id)}`, body);
+  if (!payload?.ok) {
+    const error = buildApiError(null, payload, 'Failed to update user');
+    throw error;
+  }
+
+  return payload;
+}
+
+export async function deactivateUserAccount(id) {
+  const payload = await deleteJson(`${API_ROOT}/users/${encodeURIComponent(id)}`);
+  if (!payload?.ok) {
+    const error = buildApiError(null, payload, 'Failed to deactivate user');
+    throw error;
+  }
+
+  return payload.user;
 }
 
 export async function getAlerts() {
@@ -245,4 +418,55 @@ export async function getMetricsHistory({ node, vmid, hours = 24 }) {
   }
 
   return payload.metrics || [];
+}
+
+function buildIdempotencyKey() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return `idemp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+async function postProxmoxAction(action, { node, vmid }) {
+  const url = `${API_ROOT}/proxmox/actions/${encodeURIComponent(action)}`;
+  const headers = {
+    'Content-Type': 'application/json',
+    'x-idempotency-key': buildIdempotencyKey()
+  };
+
+  const response = await apiFetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ node, vmid })
+  });
+
+  const payload = await safeJson(response);
+  if (!response.ok || !payload?.ok) {
+    const error = buildApiError(response, payload, 'Proxmox action failed');
+    throw error;
+  }
+
+  return payload.result;
+}
+
+export async function performVmAction(action, { node, vmid }) {
+  if (!action || !node || vmid == null) {
+    throw new Error('action, node, and vmid are required');
+  }
+  return postProxmoxAction(action, { node, vmid });
+}
+
+export async function changePassword({ username, oldPassword, newPassword }) {
+  const payload = await postJson(`${API_ROOT}/change-password`, {
+    username,
+    oldPassword,
+    newPassword
+  });
+
+  if (!payload?.ok) {
+    const error = buildApiError(null, payload, 'Failed to change password');
+    throw error;
+  }
+
+  return payload;
 }

@@ -46,37 +46,48 @@ the web UI.
   self-signed certificates
 
 ## Configuration
-All runtime configuration resides in environment variables. Copy `.env.example`
-to `.env` and update the values for your environment.
+All runtime configuration resides in environment variables. Copy the example
+files below and populate them with the secrets for your deployment:
+
+```bash
+cp backend/.env.example backend/.env
+cp frontend/.env.local.example frontend/.env.local
+```
+
+The backend `.env` is consumed by Express and Docker Compose, while the frontend
+`.env.local` feeds public `NEXT_PUBLIC_*` settings into Next.js. Never commit the
+real `.env` files—Git already ignores them by default.
+
+Key variables you must review:
 
 | Variable | Description |
 | --- | --- |
-| `NODE_ENV` | Deployment environment (defaults to `development`). |
-| `PORT` | Backend port exposed inside the container (default `3001`). |
-| `PROXMOX_HOST` | Fully-qualified Proxmox API URL, including scheme and port. |
-| `PROXMOX_TOKEN_ID` | Token identifier in `<user>@<realm>!<token-name>` format. |
-| `PROXMOX_TOKEN_SECRET` | Secret associated with the token ID. |
-| `NEXT_PUBLIC_API_URL` | Base URL the frontend uses when calling the backend. |
-| `SESSION_SECRET` | Secret key for signing session cookies. Set per environment. |
-| `MONGO_URL` | Connection string for MongoDB-backed session storage. |
-| `POSTGRES_URL` | Postgres connection string for VM metrics history. |
-| `FRONTEND_ORIGIN` | Allowed frontend origin(s) for CORS (`http://localhost:3000` in dev). |
-| `REQUIRE_DUAL_CONTROL` | When `true`, stop/reboot actions require admin approval before execution. |
-| `OPENAI_API_KEY` | API token for OpenAI proposals (required for `/api/assistant/propose`). |
-| `OPENAI_MODEL` | Optional override for the OpenAI model (default `gpt-4o-mini`). |
-| `PROPOSAL_STEP_TIMEOUT_MS` | Milliseconds before a proposal step times out (default `15000`). |
+| `SESSION_SECRET` | Required for secure session cookies. |
+| `DB_PASSWORD` / `POSTGRES_URL` | Backend credentials for the metrics database. |
+| `FRONTEND_ORIGIN` | Allowed origins for CORS (`http://localhost:3000` in development). |
+| `PROXMOX_API_URL` | Proxmox API base URL. |
+| `PROXMOX_TOKEN_ID` / `PROXMOX_TOKEN_SECRET` | Proxmox API token credentials. |
+| `OPENAI_API_KEY` | Enables `/api/assistant/propose`. Leave blank to disable. |
+| `SMTP_URL` or `SENDGRID_API_KEY` | Email transport configuration for notifications. |
+| `SLACK_WEBHOOK_URL` | Slack alerts for approvals and VM actions. |
+| `NEXT_PUBLIC_BACKEND_BASE` / `NEXT_PUBLIC_API_BASE` | Browser-visible URLs for the frontend. |
 
-> ⚠️ `.env` is already ignored by git. Never commit real secrets.
+> ⚠️ `.env` files are ignored by git. Populate them locally (or in your secrets
+> manager) and never commit real credentials.
 
 ## Quick Start (Docker Compose)
 This launches the entire stack (frontend, backend, reverse proxy) with one
 command.
 
 ```bash
-cp .env.example .env
-# Edit .env with your Proxmox credentials (leave MONGO_URL pointing at the bundled mongo service)
+cp backend/.env.example backend/.env
+cp frontend/.env.local.example frontend/.env.local
+# Edit both files and provide real secrets/URLs
 docker compose up --build -d
 ```
+
+Compose reads `backend/.env` and `frontend/.env.local` via `env_file:` entries,
+so secrets stay on the host and are never baked into container images.
 
 Smoke-test the deployment:
 
@@ -120,6 +131,22 @@ server {
 Ensure the proxy adds the standard `X-Forwarded-*` headers so Express can honor
 them when `NODE_ENV=production` (see `backend/server.js`).
 
+## Backups
+
+Use `deploy/backup.sh` to capture lightweight snapshots of Postgres and Redis
+state. Run it manually after critical changes or schedule it via cron:
+
+```bash
+# Manual dump
+deploy/backup.sh
+
+# Cron example (daily at 02:30)
+30 2 * * * /path/to/repo/deploy/backup.sh >> /var/log/argus-backup.log 2>&1
+```
+
+Backups are written to the `backup/` directory (ignored by git). Ensure
+`pg_dump` is available and `data/redis` exists before automating the job.
+
 ## Local Development
 Run services individually when you want hot reload or tighter iteration loops.
 
@@ -140,9 +167,37 @@ npm install
 npm run dev -- --port 3000
 ```
 
-Set `NEXT_PUBLIC_API_URL=http://localhost:3001` while running the backend
-locally. By default Next.js runs on port 3000; adjust the Nginx config or the
-frontend port if you need something different.
+During development either rely on `frontend/.env.local` (defaults target
+`http://localhost:3001`) or launch with
+`NEXT_PUBLIC_BACKEND_BASE=http://localhost:3001 NEXT_PUBLIC_API_BASE=http://localhost:3001/api/proxmox`.
+By default Next.js runs on port 3000; adjust the Nginx config or the frontend
+port if you need something different.
+
+The UI layer is built with Tailwind CSS and shadcn/ui primitives; whenever you
+pull new changes, run `npm install` inside `frontend/` to keep the Tailwind,
+Radix, and lucide dependencies aligned.
+
+Alternatively, start both backend and frontend together from the repo root:
+
+```bash
+scripts/dev.sh
+```
+
+The helper script boots the backend in mock mode on port 3001 and the frontend
+on port 3000. Override defaults by exporting variables (for example,
+`ARGUS_FRONTEND_PORT=4000 scripts/dev.sh`). Use `Ctrl+C` once to stop both
+processes.
+
+### Mock mode (no Proxmox access)
+Set `PROXMOX_MOCK_MODE=true` in your environment when a hypervisor is
+unreachable. The backend will:
+
+- Skip validation for `PROXMOX_*` credentials.
+- Serve canned data for `/nodes`, `/cluster/status`, `/nodes/:node/qemu`, and `/nodes/:node/lxc`.
+- Accept `start`, `stop`, and `reboot` actions, updating in-memory state so the UI reflects status changes.
+
+Adjust `PROXMOX_MOCK_LATENCY_MS` to fine-tune artificial response delays (set to
+`0` for instant responses).
 
 ### Reverse Proxy (optional during dev)
 For pure local development you can skip Nginx and talk directly to the backend.
